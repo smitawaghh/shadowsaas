@@ -12,6 +12,19 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Node
+node_modules/
+dist/
+build/
+*.local
+
+# ML model artifacts
+*.pkl
+models/
+
+# Logs
+*.log
+
 # IDEs
 .vscode/
 .idea/

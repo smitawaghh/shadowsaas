@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Optional, List
 from datetime import datetime
 
@@ -14,7 +14,5 @@ class AppProfileCreate(AppProfileBase):
     pass
 
 class AppProfileInDB(AppProfileBase):
+    model_config = ConfigDict(populate_by_name=True)
     id: str = Field(alias="_id")
-
-    class Config:
-        populate_by_name = True
