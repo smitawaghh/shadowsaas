@@ -1,4 +1,4 @@
-# FastAPI & Web Framework
+# Web framework
 fastapi
 uvicorn[standard]
 pydantic
@@ -8,70 +8,32 @@ python-multipart
 # Database
 motor
 pymongo
-mongoengine
 
-# Security & Authentication
+# Auth & Security
 python-jose[cryptography]
 passlib[bcrypt]
-cryptography
-PyJWT
 bcrypt
+slowapi
 
-# ML & Data Science
+# ML
 scikit-learn
 numpy
 pandas
 scipy
 joblib
 
-# Network & Packet Analysis
-scapy
-dpkt
-GeoIP2
-maxminddb
-
-# Data Processing
-python-dateutil
-pytz
-
-# Logging & Monitoring
+# Logging
 python-json-logger
-sentry-sdk
 structlog
 
-# API Documentation
-
-# Rate Limiting & Security
-slowapi
+# Utilities
 python-dotenv
-
-# Testing
-pytest
-pytest-asyncio
-pytest-cov
-httpx
-
-# Performance
-redis
-aioredis
-
-# Async Support
+python-dateutil
+pytz
+requests
 aiofiles
-asyncpg
 
-# Reporting & Export
+# Export
 reportlab
 python-pptx
 openpyxl
-
-# Development
-black
-flake8
-isort
-mypy
-
-# Utilities
-requests
-httplib2
-colorama
-click

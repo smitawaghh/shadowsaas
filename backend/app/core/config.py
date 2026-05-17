@@ -49,7 +49,8 @@ class Settings(BaseSettings):
     ML_TRAIN_INTERVAL_SEC:       int   = 86400  # 24 h
     ML_MIN_EVENTS_TO_TRAIN:      int   = 50
 
-    # CORS
+    # CORS — set CORS_ORIGINS env var as JSON list to add production URLs
+    # e.g. '["https://shadowsaas.vercel.app","http://localhost:5173"]'
     CORS_ORIGINS: list = ["http://localhost:3000", "http://localhost:5173"]
 
     class Config:
