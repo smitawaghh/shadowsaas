@@ -8,8 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection, create_indices
 from app.core.ws_manager import ws_manager
+from app.core.logging_config import setup_logging
 from app.api.api import api_router
 
+setup_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -57,11 +59,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.get("/api/health")
-async def health_check():
-    return {"status": "ok", "project": settings.PROJECT_NAME}
 
 
 @app.websocket("/ws/events")

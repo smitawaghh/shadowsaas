@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # ── UEBA baseline ──────────────────────────────────────────────────────
     UEBA_BASELINE_DAYS:          int   = 14   # days of history to build baseline
     UEBA_DEVIATION_THRESHOLD:    float = 2.5  # sigma before raising UEBA alert
-    UEBA_RECOMPUTE_INTERVAL_SEC: int   = 3600 # recompute baselines every hour
+    UEBA_RECOMPUTE_INTERVAL_SEC: int   = 120  # recompute baselines every 2 min (demo-friendly)
 
     # ── ML auto-training ──────────────────────────────────────────────────
     ML_AUTO_TRAIN:               bool  = True

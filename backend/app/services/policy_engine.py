@@ -41,6 +41,14 @@ logger = logging.getLogger(__name__)
 
 RULE_PREFIX = "ShadowSaaS-Block-"
 
+_PROTECTED_IPS = {
+    "127.0.0.1", "::1",
+    "159.41.233.221",  # MongoDB Atlas shard-00-01
+}
+
+def _is_protected(ip: str) -> bool:
+    return ip in _PROTECTED_IPS or ip.startswith("169.254.") or ip.startswith("224.")
+
 
 def _netsh_block(ip: str) -> bool:
     if sys.platform != "win32":
@@ -66,6 +74,9 @@ async def _execute_action(db, policy: dict, matching_events: list) -> None:
     for ip in affected_ips:
         # ── Quarantine ────────────────────────────────────────────────────
         if action in ("quarantine", "block_and_alert"):
+            if _is_protected(ip):
+                logger.debug(f"[POLICY] Skipping protected IP {ip}")
+                continue
             already = await db.quarantined_ips.find_one({"ip": ip})
             if not already:
                 blocked = _netsh_block(ip)

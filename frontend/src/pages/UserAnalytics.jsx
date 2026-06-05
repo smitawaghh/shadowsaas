@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
-import { fetchUserAnalytics, fetchDeviceTimeline, quarantineIP } from '../services/api';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { fetchUserAnalytics, fetchDeviceTimeline, detectMyIP } from '../services/api';
 import {
   Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
   ResponsiveContainer, PieChart, Pie, Cell, Tooltip,
   AreaChart, Area, XAxis, YAxis, CartesianGrid, BarChart, Bar,
 } from 'recharts';
 import {
-  Users, Brain, TrendingDown, AlertTriangle, X, Ban,
-  Activity, Clock, Shield, ChevronRight, Search, Filter,
+  Users, Brain, TrendingDown, AlertTriangle, X,
+  Activity, Clock, Shield, ChevronRight, Search, Filter, ExternalLink,
 } from 'lucide-react';
 
 const RISK_COLORS = { CRITICAL: '#ef4444', ELEVATED: '#f59e0b', NORMAL: '#10b981' };
@@ -26,12 +26,9 @@ function RiskBadge({ level, score }) {
 }
 
 // ── Per-device investigation modal ─────────────────────────────────────────
-function InvestigationModal({ user, onClose }) {
+function InvestigationModal({ user, onClose, onOpenInThreatIntel }) {
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
-  const [blocking, setBlocking] = useState(false);
-  const [blocked, setBlocked] = useState(false);
-  const [toast, setToast]     = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -45,19 +42,6 @@ function InvestigationModal({ user, onClose }) {
       }
     })();
   }, [user.ip]);
-
-  const handleBlock = async () => {
-    setBlocking(true);
-    try {
-      await quarantineIP(user.ip);
-      setBlocked(true);
-      setToast('IP quarantined — network access suspended');
-    } catch {
-      setToast('Failed to quarantine IP');
-    } finally {
-      setBlocking(false);
-    }
-  };
 
   // Build timeline chart from events (chronological, last 30)
   const timelinePoints = data
@@ -100,32 +84,19 @@ function InvestigationModal({ user, onClose }) {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {!blocked && (
-              <button
-                onClick={handleBlock}
-                disabled={blocking}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
-                  bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 transition-all disabled:opacity-40">
-                <Ban className="w-3 h-3" />
-                {blocking ? 'Blocking…' : 'Block IP'}
-              </button>
-            )}
-            {blocked && (
-              <span className="text-[10px] font-mono text-rose-400 border border-rose-500/30 bg-rose-500/10 px-2 py-1 rounded-lg">
-                ✓ IP Quarantined
-              </span>
-            )}
+            <button
+              onClick={onOpenInThreatIntel}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
+                bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 transition-all"
+              title="Open full investigation and blocking tools in Threat Intel">
+              <ExternalLink className="w-3 h-3" />
+              Investigate &amp; Block →
+            </button>
             <button onClick={onClose} className="p-1.5 text-slate-500 hover:text-slate-200 hover:bg-slate-800 rounded-lg transition-colors">
               <X className="w-4 h-4" />
             </button>
           </div>
         </div>
-
-        {toast && (
-          <div className="mx-5 mt-3 px-3 py-2 bg-emerald-950 border border-emerald-500/30 text-emerald-300 rounded-lg text-xs font-mono">
-            {toast}
-          </div>
-        )}
 
         <div className="p-5 space-y-5">
           {/* KPI strip */}
@@ -261,11 +232,17 @@ function InvestigationModal({ user, onClose }) {
 // ── Main UserAnalytics page ────────────────────────────────────────────────
 export default function UserAnalytics() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [users, setUsers]             = useState([]);
   const [loading, setLoading]         = useState(true);
   const [selected, setSelected]       = useState(null);
   const [search, setSearch]           = useState('');
   const [levelFilter, setLevelFilter] = useState('All');
+  const [myDeviceIp, setMyDeviceIp]   = useState(null);
+
+  useEffect(() => {
+    detectMyIP().then((ip) => setMyDeviceIp(ip || null));
+  }, []);
 
   const loadData = useCallback(async () => {
     try {
@@ -321,7 +298,11 @@ export default function UserAnalytics() {
   return (
     <div className="space-y-6 animate-fade-in">
       {selected && (
-        <InvestigationModal user={selected} onClose={() => setSelected(null)} />
+        <InvestigationModal
+          user={selected}
+          onClose={() => setSelected(null)}
+          onOpenInThreatIntel={() => navigate(`/threats?ip=${selected.ip}`)}
+        />
       )}
 
       {/* Page header */}
@@ -460,7 +441,11 @@ export default function UserAnalytics() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
           {filtered.map((user, idx) => {
             const level  = user.riskLevel || 'NORMAL';
-            const border = level === 'CRITICAL' ? 'border-t-rose-500' : level === 'ELEVATED' ? 'border-t-amber-500' : 'border-t-emerald-500';
+            const isMe   = myDeviceIp && user.ip === myDeviceIp;
+            const border = isMe ? 'border-t-emerald-400'
+              : level === 'CRITICAL' ? 'border-t-rose-500'
+              : level === 'ELEVATED' ? 'border-t-amber-500'
+              : 'border-t-emerald-500';
             const decay  = Number(user.dynamic_risk_score ?? user.avgRisk);
             const avg    = Number(user.avgRisk ?? 0);
             const decayPct = avg > 0 ? ((decay - avg) / avg * 100) : 0;
@@ -470,9 +455,16 @@ export default function UserAnalytics() {
                 onClick={() => setSelected(user)}
                 className={`glass-panel rounded-xl p-4 border-t-4 ${border} cursor-pointer
                   transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:border-opacity-80
-                  ${selected?.ip === user.ip ? 'ring-1 ring-cyan-500/40' : ''}`}>
+                  ${selected?.ip === user.ip ? 'ring-1 ring-cyan-500/40' : ''}
+                  ${isMe ? 'ring-1 ring-emerald-500/20' : ''}`}>
                 <div className="flex items-start justify-between mb-3">
                   <div className="min-w-0 flex-1 pr-2">
+                    {isMe && (
+                      <div className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded border font-mono mb-1"
+                        style={{ color: '#00ff88', background: 'rgba(0,255,136,0.08)', borderColor: 'rgba(0,255,136,0.3)' }}>
+                        MY MACHINE
+                      </div>
+                    )}
                     {user.device_name && user.device_name !== user.ip && (
                       <div className="text-[10px] font-bold font-mono text-cyan-300 truncate leading-none mb-0.5">{user.device_name}</div>
                     )}

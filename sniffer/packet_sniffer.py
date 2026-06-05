@@ -392,6 +392,8 @@ def _process_packet(backend_url: str, packet) -> None:
 
     if src_port == 53 or dst_port == 53:
         return
+    if src_port == 27017 or dst_port == 27017:
+        return
 
     # ── SNI / Host extraction ──────────────────────────────────────────────
     sni = ""
@@ -491,6 +493,22 @@ def _process_packet(backend_url: str, packet) -> None:
     flow["bytes_received"]      = 0
 
 
+def _get_my_ip() -> str:
+    """Detect the outbound IP of this machine — the interface used for internet traffic."""
+    try:
+        # UDP connect trick: picks the right outbound interface without actually sending anything
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return socket.gethostbyname(socket.gethostname())
+
+
+def _api_base(ingest_url: str) -> str:
+    """Derive API root from the ingest URL. e.g. http://host:8000/api/events/ingest → http://host:8000/api"""
+    return ingest_url.split("/events/ingest")[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description="ShadowSaaS Packet Sniffer")
     parser.add_argument("--iface",       default=None,
@@ -519,6 +537,20 @@ def main():
     logger.info(f"  Flow window  : {FLOW_WINDOW} packets")
     logger.info("  Requires     : Npcap + Administrator")
     logger.info("=" * 65)
+
+    # ── Register this machine with the backend ────────────────────────────
+    my_ip       = _get_my_ip()
+    my_hostname = socket.gethostname()
+    try:
+        requests.post(
+            f"{_api_base(args.backend)}/my-device",
+            json={"ip": my_ip, "hostname": my_hostname},
+            timeout=3,
+            headers=_INGEST_HEADERS,
+        )
+        logger.info(f"My device registered: {my_ip} ({my_hostname})")
+    except Exception as exc:
+        logger.warning(f"Could not register my-device: {exc}")
 
     # ── Device discovery ──────────────────────────────────────────────────
     arp_count = _scan_arp_table()

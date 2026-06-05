@@ -12,6 +12,7 @@ Run: python mock_traffic_generator.py [--count N] [--burst]
 import time
 import random
 import argparse
+import socket
 import requests
 from datetime import datetime
 
@@ -45,8 +46,22 @@ APPS = [
     {"name": "Pastebin",            "ip": "104.20.1.50",     "base_risk": 78,  "category": "High Risk"},
 ]
 
-# Simulated internal user IPs (40 unique users)
-USERS = [f"192.168.1.{i}" for i in range(10, 50)]
+def _get_my_ip():
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            return s.getsockname()[0]
+    except Exception:
+        return None
+
+_MY_IP = _get_my_ip()
+_SUBNET = _MY_IP.rsplit('.', 1)[0] if _MY_IP else "192.168.1"
+
+# Simulated internal user IPs — uses real machine's subnet so MY MACHINE badge works
+USERS = (
+    ([_MY_IP] if _MY_IP else []) +
+    [f"{_SUBNET}.{i}" for i in range(10, 45) if not _MY_IP or f"{_SUBNET}.{i}" != _MY_IP]
+)
 
 
 def generate_mock_event() -> tuple[dict, str, bool]:

@@ -67,12 +67,44 @@ export const exportEventsCsv = (days = 7) =>
 export const fetchPolicies = () => api.get('/policies');
 export const createPolicy = (policy) => api.post('/policies', policy);
 
-// Incident Response
+// Incident Response (legacy quarantine endpoints — still used by Alert Center / Insider Threat)
 export const quarantineIP = (ip) => api.post(`/quarantine/${ip}`);
 export const unquarantineIP = (ip) => api.post(`/unquarantine/${ip}`);
 export const fetchQuarantinedIPs = () => api.get('/quarantined');
 export const fetchPlaybooks = () => api.get('/playbooks');
 export const createPlaybook = (playbook) => api.post('/playbooks', playbook);
+
+// My Device — detect own LAN IP via WebRTC (no server needed, works instantly)
+// Falls back to backend auto-detect if WebRTC is blocked by browser privacy settings.
+export async function detectMyIP() {
+  try {
+    const ip = await new Promise((resolve, reject) => {
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      pc.createDataChannel('');
+      pc.createOffer().then((o) => pc.setLocalDescription(o));
+      pc.onicecandidate = (e) => {
+        if (!e || !e.candidate) return;
+        const m = /(\d+\.\d+\.\d+\.\d+)/.exec(e.candidate.candidate);
+        if (m && !m[1].startsWith('127.')) { pc.close(); resolve(m[1]); }
+      };
+      setTimeout(() => reject(new Error('timeout')), 2500);
+    });
+    if (ip) return ip;
+  } catch { /* fall through */ }
+  // Fallback: ask backend (requires backend restart to have the new endpoint)
+  try {
+    const r = await api.get('/my-device');
+    return r?.ip || null;
+  } catch { return null; }
+}
+export const fetchMyDevice = () => api.get('/my-device');
+export const registerMyDevice = (ip, hostname) => api.post('/my-device', { ip, hostname });
+
+// Firewall Control (dedicated page — full lifecycle with history & OS verification)
+export const fetchFirewallStatus = () => api.get('/firewall/status');
+export const fetchFirewallRules = (verify = false) => api.get('/firewall/rules', { params: { verify } });
+export const firewallBlock = (body) => api.post('/firewall/block', body);
+export const firewallUnblock = (ip) => api.post(`/firewall/unblock/${encodeURIComponent(ip)}`);
 
 // Alerts (active unacknowledged high-risk events)
 export const fetchAlerts = (minRisk = 60, limit = 50) =>
@@ -93,6 +125,10 @@ export const fetchShadowApps = (days = 7) =>
   api.get('/analytics/shadow-apps', { params: { days } });
 export const fetchGenAIStats = (hours = 24) =>
   api.get('/analytics/genai', { params: { hours } });
+
+// Health & Monitoring
+export const fetchHealth = () => api.get('/health');
+export const fetchHealthLogs = (lines = 100) => api.get('/health/logs', { params: { lines } });
 
 // Audit Logs (admin only)
 export const fetchAuditLogs = (params = {}) =>

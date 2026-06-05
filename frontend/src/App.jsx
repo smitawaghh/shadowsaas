@@ -8,6 +8,8 @@ import MLModels      from './pages/MLModels';
 import Settings      from './pages/Settings';
 import AlertCenter   from './pages/AlertCenter';
 import AuditLog      from './pages/AuditLog';
+import Firewall      from './pages/Firewall';
+import Monitor       from './pages/Monitor';
 import { useAuthStore } from './store/authStore';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { fetchAlerts } from './services/api';
@@ -16,7 +18,7 @@ import './App.css';
 import {
   LayoutDashboard, Users, ShieldAlert, Package,
   BrainCircuit, Settings as SettingsIcon, LogOut,
-  Bell, Shield, ChevronRight, Activity, BellRing, ClipboardList,
+  Bell, Shield, ChevronRight, Activity, BellRing, ClipboardList, Flame, MonitorDot,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
@@ -24,8 +26,10 @@ const NAV_ITEMS = [
   { path: '/users',   icon: Users,           label: 'Insider Threat',      sub: 'Behavioral analytics',  color: '#00ff88' },
   { path: '/alerts',  icon: BellRing,        label: 'Alert Center',        sub: 'Admin response queue',  color: '#ff3366', badge: true },
   { path: '/threats', icon: ShieldAlert,     label: 'Threat Intelligence', sub: 'Event feed & analysis', color: '#ff6633' },
-  { path: '/apps',    icon: Package,         label: 'App Governance',      sub: 'Shadow IT & policies',  color: '#ffb300' },
-  { path: '/ml',      icon: BrainCircuit,    label: 'AI Detection Engine', sub: 'ML model management',   color: '#b366ff' },
+  { path: '/apps',    icon: Package,      label: 'App Governance',      sub: 'Shadow IT & policies', color: '#ffb300' },
+  { path: '/ml',     icon: BrainCircuit, label: 'AI Detection Engine', sub: 'ML model management',  color: '#b366ff' },
+  { path: '/firewall', icon: Flame,           label: 'Firewall Control',    sub: 'IP block & OS rules',   color: '#ff3366' },
+  { path: '/monitor', icon: MonitorDot,      label: 'Ops Monitor',         sub: 'Health · logs · metrics', color: '#00ff88' },
   { path: '/audit',   icon: ClipboardList,   label: 'Audit Log',           sub: 'Immutable admin trail', color: '#ffb300' },
   { path: '/settings',icon: SettingsIcon,    label: 'Configuration',       sub: 'System & response',     color: '#00e5ff' },
 ];
@@ -258,6 +262,8 @@ function App() {
                         <Route path="/threats"  element={<ThreatIntel />} />
                         <Route path="/apps"     element={<AppProfiling />} />
                         <Route path="/ml"       element={<MLModels />} />
+                        <Route path="/firewall" element={<Firewall />} />
+                        <Route path="/monitor"  element={<Monitor />} />
                         <Route path="/audit"    element={<AuditLog />} />
                         <Route path="/settings" element={<Settings />} />
                         <Route path="*"         element={<Navigate to="/" replace />} />

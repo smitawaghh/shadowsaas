@@ -2,7 +2,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Header
 from pydantic import BaseModel
 from datetime import datetime
 from typing import Optional
+import asyncio
+import json
 import logging
+import os
+import socket
 import time as _time
 
 from app.core.database import get_database
@@ -20,6 +24,42 @@ router = APIRouter()
 
 # Tracks last successful ingest — lets the frontend show a live sniffer indicator
 _last_ingest_time: float = 0.0
+
+# ── Backend rDNS fallback for Unknown SaaS ────────────────────────────────
+# Load same signatures as the sniffer so the backend can identify IPs the
+# sniffer couldn't match (QUIC, ESNI, mid-flow packets, async rDNS race).
+_rdns_cache: dict = {}   # destination_ip → resolved app_name
+
+
+def _load_sni_sigs() -> tuple[dict, dict]:
+    sig_path = os.path.normpath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "sniffer", "app_signatures.json")
+    )
+    try:
+        with open(sig_path) as f:
+            sigs = json.load(f)
+        return sigs.get("sni_keywords", {}), sigs.get("ip_prefixes", {})
+    except Exception:
+        return {}, {}
+
+
+_SNI_KW, _IP_PFX = _load_sni_sigs()
+
+
+def _resolve_app_sync(ip: str) -> str:
+    """Blocking rDNS + signature match — runs in asyncio thread pool."""
+    try:
+        hostname = socket.gethostbyaddr(ip)[0].lower()
+        for kw, app in _SNI_KW.items():
+            if hostname == kw or hostname.endswith("." + kw):
+                return app
+        return hostname.removeprefix("www.")
+    except Exception:
+        pass
+    for pfx, app in _IP_PFX.items():
+        if ip.startswith(pfx):
+            return app
+    return "Unknown SaaS"
 
 
 def _verify_sniffer_key(x_sniffer_key: Optional[str] = Header(default=None)) -> None:
@@ -135,6 +175,19 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
       4. Persist to MongoDB, update IP risk profile
     """
     try:
+        # ── Step 0: Resolve Unknown SaaS via backend rDNS ───────────────────
+        # The sniffer returns "Unknown SaaS" when it can't match an SNI
+        # (QUIC, ESNI, mid-flow packets). Try a reverse DNS lookup here so
+        # the event is correctly labelled before risk scoring runs.
+        app_name = event.app_name
+        if app_name == "Unknown SaaS" and event.destination_ip:
+            cached = _rdns_cache.get(event.destination_ip)
+            if cached:
+                app_name = cached
+            else:
+                app_name = await asyncio.to_thread(_resolve_app_sync, event.destination_ip)
+                _rdns_cache[event.destination_ip] = app_name
+
         # ── Step 1: Isolation Forest anomaly detection ──────────────────────
         is_anomalous, ml_risk_score = detector.predict(
             event.upload_download_ratio,
@@ -150,11 +203,12 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
 
         # ── Step 2: GenAI DLP check ─────────────────────────────────────────
         genai_engine = get_genai_dlp_engine()
-        dlp_result = genai_engine.analyze_event(event.model_dump())
+        dlp_result = genai_engine.analyze_event({**event.model_dump(), "app_name": app_name})
 
         # ── Step 3: Multi-factor risk scoring ───────────────────────────────
         risk_engine = get_risk_engine(db)
         event_dict = event.model_dump()
+        event_dict["app_name"] = app_name          # use resolved name for risk scoring
         event_dict["timestamp"] = datetime.utcnow().isoformat()
         risk_result = await risk_engine.calculate_risk(event_dict, anomaly_info)
 
@@ -167,6 +221,14 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
             final_risk = max(final_risk, dlp_result["genai_risk_score"])
             risk_level = "CRITICAL"
             risk_reasons.append("Bulk Data Paste to GenAI Detected")
+            risk_reasons.extend(dlp_result["genai_tags"])
+        elif dlp_result["is_genai_access"]:
+            # Any access to unsanctioned GenAI is a DLP concern — always alert
+            final_risk = max(final_risk, dlp_result["genai_risk_score"])
+            if final_risk >= 70:
+                risk_level = "CRITICAL"
+            elif final_risk >= 40:
+                risk_level = "ELEVATED"
             risk_reasons.extend(dlp_result["genai_tags"])
 
         # ── Step 3b: UEBA behavioral deviation check ─────────────────────────
@@ -196,7 +258,7 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
             "source_port": event.source_port,
             "destination_port": event.destination_port,
             "protocol": event.protocol,
-            "app_name": event.app_name,
+            "app_name": app_name,
             "bytes_sent": event.bytes_sent,
             "bytes_received": event.bytes_received,
             "upload_download_ratio": event.upload_download_ratio,
@@ -206,6 +268,7 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
             "risk_score": round(final_risk, 2),
             "risk_level": risk_level,
             "risk_reasons": list(set(risk_reasons)),
+            "is_genai_access": dlp_result["is_genai_access"],
             "is_genai_exfiltration": dlp_result["is_genai_exfiltration"],
             # Device identity — None when sniffer doesn't resolve it yet
             "device_name":  event.device_name,
@@ -220,6 +283,22 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
         # Mark sniffer as online (used by /events/sniffer-status)
         global _last_ingest_time
         _last_ingest_time = _time.time()
+
+        # ── Auto-create alert for high-risk events ──────────────────────────
+        if final_risk >= settings.NOTIFY_THRESHOLD:
+            await db.alerts.insert_one({
+                "severity":   risk_level,
+                "status":     "open",
+                "created_at": now_iso,
+                "source_ip":  event.source_ip,
+                "app_name":   app_name,
+                "risk_score": round(final_risk, 2),
+                "reasons":    list(set(risk_reasons)),
+                "event_id":   str(result.inserted_id),
+            })
+            logger.warning(
+                f"ALERT [{risk_level}]: {app_name} | risk={final_risk:.1f} | {event.source_ip}"
+            )
 
         # Broadcast to all live dashboard WebSocket clients
         await ws_manager.broadcast({"type": "event", "data": event_doc})
@@ -251,12 +330,12 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
         )
 
         # ── Step 6: Auto-create app profile on first detection ──────────────
-        app_meta = _APP_CATALOG.get(event.app_name)
+        app_meta = _APP_CATALOG.get(app_name)
         await db.app_profiles.update_one(
-            {"name": event.app_name},
+            {"name": app_name},
             {
                 "$setOnInsert": {
-                    "name": event.app_name,
+                    "name": app_name,
                     "category": app_meta["category"] if app_meta else "Unknown SaaS",
                     "trust_score": app_meta["trust_score"] if app_meta else 50.0,
                     "is_sanctioned": app_meta["is_sanctioned"] if app_meta else None,
@@ -272,7 +351,7 @@ async def ingest_event(event: EventCreate, db=Depends(get_database)):
         )
 
         logger.info(
-            f"Ingested: {event.app_name} | risk={final_risk:.1f} ({risk_level}) | anomaly={is_anomalous}"
+            f"Ingested: {app_name} | risk={final_risk:.1f} ({risk_level}) | anomaly={is_anomalous}"
         )
         return event_doc
 

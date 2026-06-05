@@ -3,11 +3,11 @@ import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
 import {
-  Bell, ShieldAlert, Brain, Check, Ban, Search,
+  Bell, ShieldAlert, Brain, Check, Search,
   RefreshCw, AlertTriangle, Zap, Activity, Filter,
-  ChevronRight, Clock, Eye,
+  ChevronRight, Clock, ExternalLink,
 } from 'lucide-react';
-import { fetchAlerts, acknowledgeAlert, quarantineIP, fetchQuarantinedIPs } from '../services/api';
+import { fetchAlerts, acknowledgeAlert, fetchQuarantinedIPs, detectMyIP } from '../services/api';
 import { useNavigate } from 'react-router-dom';
 
 const RISK_COLOR = (score) =>
@@ -29,13 +29,9 @@ function LevelBadge({ level }) {
   );
 }
 
-function AlertCard({ alert, onAck, onBlock, onInvestigate, quarantined }) {
-  const [acting, setActing] = useState(null);
-
-  const handle = async (action, fn) => {
-    setActing(action);
-    try { await fn(); } finally { setActing(null); }
-  };
+function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
+  const isMe = myDeviceIp && alert.source_ip === myDeviceIp;
+  const [acking, setAcking] = useState(false);
 
   const ts = new Date(alert.timestamp);
   const ageMs = Date.now() - ts.getTime();
@@ -44,6 +40,11 @@ function AlertCard({ alert, onAck, onBlock, onInvestigate, quarantined }) {
     : `${Math.floor(ageMs / 3600000)}h ago`;
 
   const isBlocked = quarantined.includes(alert.source_ip);
+
+  const handleAck = async () => {
+    setAcking(true);
+    try { await onAck(alert._id); } finally { setAcking(false); }
+  };
 
   return (
     <div className={`glass-panel rounded-xl p-4 border-l-4 transition-all hover:-translate-y-0.5
@@ -59,14 +60,18 @@ function AlertCard({ alert, onAck, onBlock, onInvestigate, quarantined }) {
           <div className="flex items-start justify-between gap-2 mb-1">
             <div className="flex items-center gap-2 flex-wrap">
               <LevelBadge level={alert.risk_level || 'ELEVATED'} />
-              {alert.is_genai_exfiltration && (
-                <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 bg-purple-500/15 border border-purple-500/30 text-purple-300 rounded-full font-mono">
+              {alert.is_genai_exfiltration ? (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 bg-purple-500/20 border border-purple-500/50 text-purple-300 rounded-full font-mono animate-pulse">
                   <Brain className="w-2.5 h-2.5" /> GenAI Exfil
+                </span>
+              ) : alert.is_genai_access && (
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 bg-violet-500/15 border border-violet-500/30 text-violet-400 rounded-full font-mono">
+                  <Brain className="w-2.5 h-2.5" /> GenAI Access
                 </span>
               )}
               {isBlocked && (
                 <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 bg-rose-900/30 border border-rose-700/40 text-rose-400 rounded-full font-mono">
-                  <Ban className="w-2.5 h-2.5" /> IP Blocked
+                  ✓ IP Blocked
                 </span>
               )}
             </div>
@@ -75,10 +80,21 @@ function AlertCard({ alert, onAck, onBlock, onInvestigate, quarantined }) {
             </span>
           </div>
 
-          <div className="flex items-center gap-3 mb-2">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
             <code className="text-xs text-cyan-400 bg-slate-900/60 px-2 py-0.5 rounded border border-slate-700/50 font-mono">
               {alert.source_ip}
             </code>
+            {isMe ? (
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border font-mono"
+                style={{ color: '#00ff88', background: 'rgba(0,255,136,0.08)', borderColor: 'rgba(0,255,136,0.3)' }}>
+                MY MACHINE
+              </span>
+            ) : (
+              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded border font-mono"
+                style={{ color: '#f59e0b', background: 'rgba(245,158,11,0.06)', borderColor: 'rgba(245,158,11,0.25)' }}>
+                NETWORK DEVICE
+              </span>
+            )}
             <ChevronRight className="w-3 h-3 text-slate-600" />
             <span className="text-sm font-bold text-slate-200 font-mono truncate">{alert.app_name}</span>
           </div>
@@ -102,29 +118,21 @@ function AlertCard({ alert, onAck, onBlock, onInvestigate, quarantined }) {
             <span className="text-[9px] text-slate-600">{alert.protocol} :{alert.destination_port}</span>
           </div>
 
-          {/* Action buttons */}
+          {/* Action buttons — no direct block here, investigation happens in Threat Intel */}
           <div className="flex items-center gap-2">
             <button
-              onClick={() => handle('ack', () => onAck(alert._id))}
-              disabled={acting === 'ack'}
+              onClick={handleAck}
+              disabled={acking}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
                 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 transition-all disabled:opacity-40">
               <Check className="w-3 h-3" />
-              {acting === 'ack' ? '…' : 'Acknowledge'}
-            </button>
-            <button
-              onClick={() => handle('block', () => onBlock(alert.source_ip))}
-              disabled={acting === 'block' || isBlocked}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
-                bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/30 text-rose-400 transition-all disabled:opacity-40">
-              <Ban className="w-3 h-3" />
-              {isBlocked ? 'Blocked' : acting === 'block' ? '…' : 'Block IP'}
+              {acking ? '…' : 'Acknowledge'}
             </button>
             <button
               onClick={() => onInvestigate(alert.source_ip)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
-                bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 transition-all">
-              <Eye className="w-3 h-3" /> Investigate
+                bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 transition-all">
+              <ExternalLink className="w-3 h-3" /> Investigate &amp; Block →
             </button>
           </div>
         </div>
@@ -144,8 +152,14 @@ export default function AlertCenter() {
   const [ackHistory, setAckHistory]   = useState(() => {
     try { return JSON.parse(localStorage.getItem('ack_alerts') || '[]'); } catch { return []; }
   });
+  const [minRisk, setMinRisk]         = useState(60);
+  const [myDeviceIp, setMyDeviceIp]   = useState(null);
   const [toast, setToast]             = useState(null);
   const [lastUpdated, setLastUpdated] = useState(null);
+
+  useEffect(() => {
+    detectMyIP().then((ip) => setMyDeviceIp(ip || null));
+  }, []);
 
   const showMsg = (msg, type = 'success') => {
     setToast({ msg, type });
@@ -155,7 +169,7 @@ export default function AlertCenter() {
   const loadAlerts = useCallback(async () => {
     try {
       const [alertResp, qResp] = await Promise.allSettled([
-        fetchAlerts(60, 100),
+        fetchAlerts(minRisk, 100),
         fetchQuarantinedIPs(),
       ]);
       if (alertResp.status === 'fulfilled') {
@@ -172,7 +186,7 @@ export default function AlertCenter() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [minRisk]);
 
   useEffect(() => {
     loadAlerts();
@@ -193,18 +207,9 @@ export default function AlertCenter() {
     }
   };
 
-  const handleBlock = async (ip) => {
-    try {
-      await quarantineIP(ip);
-      setQuarantined((prev) => [...new Set([...prev, ip])]);
-      showMsg(`IP ${ip} quarantined — network access blocked`);
-    } catch {
-      showMsg(`Failed to block ${ip}`, 'error');
-    }
-  };
-
+  // Investigate navigates to Threat Intel — that page handles deep analysis AND blocking
   const handleInvestigate = (ip) => {
-    navigate('/users', { state: { investigateIp: ip } });
+    navigate(`/threats?ip=${ip}`);
   };
 
   // Build timeline data from alerts (last 20, chronological)
@@ -226,7 +231,7 @@ export default function AlertCenter() {
 
   const critical = alerts.filter((a) => a.risk_level === 'CRITICAL').length;
   const elevated = alerts.filter((a) => a.risk_level === 'ELEVATED').length;
-  const genaiAlerts = alerts.filter((a) => a.is_genai_exfiltration).length;
+  const genaiAlerts = alerts.filter((a) => a.is_genai_exfiltration || a.is_genai_access).length;
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -327,6 +332,17 @@ export default function AlertCenter() {
           <button onClick={loadAlerts} className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-slate-800 rounded-lg transition-colors">
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+          <div className="w-px h-5 bg-slate-800" />
+          <button
+            onClick={() => setMinRisk((prev) => (prev === 60 ? 30 : 60))}
+            title={minRisk === 60 ? 'Show events with risk ≥ 30 (catches real traffic)' : 'Show critical/elevated only (risk ≥ 60)'}
+            className={`px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase border transition-all ${
+              minRisk === 30
+                ? 'bg-cyan-500/20 border-cyan-500/50 text-cyan-400'
+                : 'bg-transparent border-slate-700 text-slate-500 hover:border-slate-500'
+            }`}>
+            {minRisk === 30 ? 'All Activity ×' : 'Show All'}
+          </button>
         </div>
       </div>
 
@@ -357,9 +373,9 @@ export default function AlertCenter() {
               key={alert._id}
               alert={alert}
               onAck={handleAcknowledge}
-              onBlock={handleBlock}
               onInvestigate={handleInvestigate}
               quarantined={quarantined}
+              myDeviceIp={myDeviceIp}
             />
           ))}
         </div>
@@ -369,7 +385,7 @@ export default function AlertCenter() {
       {quarantined.length > 0 && (
         <div className="glass-panel rounded-xl p-4 border border-rose-500/20">
           <h3 className="text-xs font-mono text-rose-400 uppercase tracking-widest mb-3 flex items-center gap-2">
-            <Ban className="w-3.5 h-3.5" /> Quarantined IPs ({quarantined.length})
+            <ShieldAlert className="w-3.5 h-3.5" /> Quarantined IPs ({quarantined.length})
           </h3>
           <div className="flex flex-wrap gap-2">
             {quarantined.map((ip, i) => (

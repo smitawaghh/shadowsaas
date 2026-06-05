@@ -145,32 +145,44 @@ class RiskScoringEngine:
             logger.debug(f"Error calculating traffic risk: {e}")
             return 0.0
     
+    _GENAI_KEYWORDS = ("genai", "chatgpt", "openai", "claude", "anthropic",
+                        "gemini", "bard", "copilot", "midjourney", "huggingface",
+                        "perplexity", "mistral", "groq")
+
     async def _get_app_risk(self, app_name: str) -> float:
-        """Get pre-configured app risk level (0-100)"""
+        """Get risk level from app_profiles collection (0-100)."""
         try:
+            name_lower = app_name.lower()
+
+            # Fast path: known unsanctioned GenAI → high base risk
+            if any(kw in name_lower for kw in self._GENAI_KEYWORDS):
+                base = 85.0
+            else:
+                base = 50.0
+
             if not self.db:
-                # Default risk for unknown apps
-                return 50.0
-            
-            app = await self.db.apps.find_one({'name': {'$regex': app_name, '$options': 'i'}})
-            
+                return base
+
+            # Query the correct collection (app_profiles, not apps)
+            app = await self.db.app_profiles.find_one(
+                {"name": {"$regex": app_name, "$options": "i"}}
+            )
             if not app:
-                return 50.0  # Unknown = moderate risk
-            
-            # Check if shadow IT
-            if app.get('is_shadow_it'):
-                return 85.0
-            
-            # Check risk level mapping
-            risk_map = {
-                'CRITICAL': 90,
-                'HIGH': 75,
-                'MEDIUM': 45,
-                'LOW': 20
-            }
-            
-            return float(risk_map.get(app.get('risk_level', 'MEDIUM'), 45))
-            
+                return base
+
+            trust = float(app.get("trust_score", 50))
+            is_sanctioned = app.get("is_sanctioned", None)
+
+            if is_sanctioned is False:
+                # Unsanctioned: invert trust score, floor at 70
+                return max(70.0, 100.0 - trust)
+            elif is_sanctioned is True:
+                # Sanctioned: scale down from trust
+                return max(5.0, 50.0 - trust * 0.4)
+            else:
+                # Under review / unknown
+                return max(35.0, 75.0 - trust * 0.5)
+
         except Exception as e:
             logger.debug(f"Error getting app risk: {e}")
             return 50.0

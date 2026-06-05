@@ -1,21 +1,37 @@
-# backend/app/core/logging_config.py
 import logging
-import logging.config
+import logging.handlers
 from pathlib import Path
-from pythonjsonlogger import jsonlogger
 
-def setup_logging(name):
-    """Configure structured logging"""
-    logger = logging.getLogger(name)
-    
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(logging.Formatter(
-        '[%(asctime)s] %(levelname)s - %(name)s: %(message)s'
-    ))
-    
-    logger.addHandler(console_handler)
-    logger.setLevel(logging.INFO)
-    
-    return logger
+LOG_DIR = Path(__file__).parent.parent.parent / "logs"
+
+
+def setup_logging(name: str | None = None) -> logging.Logger:
+    LOG_DIR.mkdir(exist_ok=True)
+
+    fmt = logging.Formatter(
+        "[%(asctime)s] %(levelname)-8s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+
+    if not root.handlers:
+        # Console
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(fmt)
+        root.addHandler(ch)
+
+        # Rotating file — 5 MB per file, keep 3 backups
+        fh = logging.handlers.RotatingFileHandler(
+            LOG_DIR / "shadowsaas.log",
+            maxBytes=5_000_000,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        root.addHandler(fh)
+
+    return logging.getLogger(name) if name else root
