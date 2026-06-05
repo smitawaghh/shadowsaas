@@ -26,6 +26,9 @@ joblib
 python-json-logger
 structlog
 
+# HTTP client
+httpx
+
 # Utilities
 python-dotenv
 python-dateutil
