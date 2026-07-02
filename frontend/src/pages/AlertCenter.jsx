@@ -5,9 +5,10 @@ import {
 import {
   Bell, ShieldAlert, Brain, Check, Search,
   RefreshCw, AlertTriangle, Zap, Activity, Filter,
-  ChevronRight, Clock, ExternalLink,
+  ChevronRight, Clock, ExternalLink, Unlock,
 } from 'lucide-react';
-import { fetchAlerts, acknowledgeAlert, fetchQuarantinedIPs, detectMyIP } from '../services/api';
+import { fetchAlerts, acknowledgeAlert, fetchQuarantinedIPs, detectMyIP, unquarantineIP } from '../services/api';
+import { subscribeToEvents } from '../services/wsClient';
 import { useNavigate } from 'react-router-dom';
 
 const RISK_COLOR = (score) =>
@@ -29,9 +30,10 @@ function LevelBadge({ level }) {
   );
 }
 
-function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
+function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp, onUnblock }) {
   const isMe = myDeviceIp && alert.source_ip === myDeviceIp;
   const [acking, setAcking] = useState(false);
+  const [unblocking, setUnblocking] = useState(false);
 
   const ts = new Date(alert.timestamp);
   const ageMs = Date.now() - ts.getTime();
@@ -44,6 +46,11 @@ function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
   const handleAck = async () => {
     setAcking(true);
     try { await onAck(alert._id); } finally { setAcking(false); }
+  };
+
+  const handleUnblock = async () => {
+    setUnblocking(true);
+    try { await onUnblock(alert.source_ip); } finally { setUnblocking(false); }
   };
 
   return (
@@ -70,8 +77,8 @@ function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
                 </span>
               )}
               {isBlocked && (
-                <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 bg-rose-900/30 border border-rose-700/40 text-rose-400 rounded-full font-mono">
-                  ✓ IP Blocked
+                <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 bg-rose-900/30 border border-rose-700/40 text-rose-400 rounded-full font-mono animate-pulse">
+                  🔒 AUTO-BLOCKED
                 </span>
               )}
             </div>
@@ -99,14 +106,75 @@ function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
             <span className="text-sm font-bold text-slate-200 font-mono truncate">{alert.app_name}</span>
           </div>
 
-          {/* Risk reasons */}
+          {/* ML-driven risk reasons */}
           {alert.risk_reasons?.length > 0 && (
             <div className="flex flex-wrap gap-1 mb-3">
-              {alert.risk_reasons.slice(0, 4).map((r, i) => (
-                <span key={i} className="text-[9px] px-1.5 py-0.5 rounded bg-slate-800/80 border border-slate-700/60 text-slate-400 font-mono">
-                  {r}
-                </span>
-              ))}
+              {alert.risk_reasons.map((r, i) => {
+                const low = r.toLowerCase();
+                const isUeba   = low.includes('off-hour') || low.includes('baseline') || low.includes('ueba') || low.includes('deviation');
+                const isGenaiR = low.includes('genai') || low.includes('bulk paste') || low.includes('ai');
+                const isML     = low.includes('anomal') || low.includes('pattern') || low.includes('isolation');
+                const isExfil  = low.includes('transfer') || low.includes('upload') || low.includes('large');
+                const col = isUeba   ? 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30'
+                           : isGenaiR ? 'text-purple-400 bg-purple-500/10 border-purple-500/30'
+                           : isML     ? 'text-fuchsia-400 bg-fuchsia-500/10 border-fuchsia-500/30'
+                           : isExfil  ? 'text-amber-400 bg-amber-500/10 border-amber-500/30'
+                           :            'text-rose-400 bg-rose-500/10 border-rose-500/30';
+                const icon = isUeba ? '⏰' : isGenaiR ? '🤖' : isML ? '🧠' : isExfil ? '📤' : '⚠️';
+                return (
+                  <span key={i} className={`inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded border font-mono ${col}`}>
+                    <span>{icon}</span>{r}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {/* UEBA flags */}
+          {alert.ueba_flags?.length > 0 && (
+            <div className="mb-3 rounded-lg px-3 py-2" style={{ background: 'rgba(0,229,255,0.04)', border: '1px solid rgba(0,229,255,0.15)' }}>
+              <p className="text-[9px] font-mono text-cyan-500 uppercase tracking-widest mb-1.5">UEBA Behavioural Flags</p>
+              <div className="flex flex-wrap gap-1">
+                {alert.ueba_flags.map((f, i) => (
+                  <span key={i} className="text-[9px] font-mono text-cyan-400 bg-cyan-500/10 border border-cyan-500/25 px-1.5 py-0.5 rounded">
+                    ⏰ {f}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ML Evidence panel */}
+          {alert.is_anomalous && (
+            <div className="mb-3 rounded-lg px-3 py-2" style={{ background: 'rgba(232,121,249,0.04)', border: '1px solid rgba(232,121,249,0.15)' }}>
+              <p className="text-[9px] font-mono text-fuchsia-400 uppercase tracking-widest mb-2">🧠 Isolation Forest — Feature Evidence</p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: 'Upload Ratio', value: alert.upload_download_ratio ?? 0, threshold: 5, unit: 'x', fmt: v => v.toFixed(1) },
+                  { label: 'Pkt Size Var', value: alert.packet_size_variance ?? 0,  threshold: 0.7, unit: '', fmt: v => v.toFixed(3) },
+                  { label: 'Inter-Arrival', value: alert.inter_arrival_time ?? 0,   threshold: null, unit: 's', fmt: v => v.toFixed(4) },
+                ].map(({ label, value, threshold, unit, fmt }) => {
+                  const flagged = threshold !== null && value > threshold;
+                  return (
+                    <div key={label} className="space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[8px] font-mono text-slate-500 uppercase tracking-wide">{label}</span>
+                        <span className="text-[9px] font-mono font-bold" style={{ color: flagged ? '#f0abfc' : '#64748b' }}>
+                          {fmt(Number(value))}{unit}
+                          {flagged && <span className="ml-1 text-[7px] text-fuchsia-400">▲HIGH</span>}
+                        </span>
+                      </div>
+                      <div className="h-1 rounded-full bg-slate-800 overflow-hidden">
+                        <div className="h-full rounded-full transition-all"
+                          style={{
+                            width: `${Math.min(100, threshold ? (value / (threshold * 3)) * 100 : (value * 200))}%`,
+                            background: flagged ? '#e879f9' : '#334155',
+                          }} />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -118,8 +186,8 @@ function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
             <span className="text-[9px] text-slate-600">{alert.protocol} :{alert.destination_port}</span>
           </div>
 
-          {/* Action buttons — no direct block here, investigation happens in Threat Intel */}
-          <div className="flex items-center gap-2">
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 flex-wrap">
             <button
               onClick={handleAck}
               disabled={acking}
@@ -128,12 +196,23 @@ function AlertCard({ alert, onAck, onInvestigate, quarantined, myDeviceIp }) {
               <Check className="w-3 h-3" />
               {acking ? '…' : 'Acknowledge'}
             </button>
-            <button
-              onClick={() => onInvestigate(alert.source_ip)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
-                bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 transition-all">
-              <ExternalLink className="w-3 h-3" /> Investigate &amp; Block →
-            </button>
+            {isBlocked ? (
+              <button
+                onClick={handleUnblock}
+                disabled={unblocking}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
+                  bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 transition-all disabled:opacity-40">
+                <Unlock className="w-3 h-3" />
+                {unblocking ? 'Removing…' : 'Unblock IP'}
+              </button>
+            ) : (
+              <button
+                onClick={() => onInvestigate(alert.source_ip)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-bold font-mono uppercase
+                  bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 transition-all">
+                <ExternalLink className="w-3 h-3" /> Investigate &amp; Block →
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -207,10 +286,31 @@ export default function AlertCenter() {
     }
   };
 
-  // Investigate navigates to Threat Intel — that page handles deep analysis AND blocking
   const handleInvestigate = (ip) => {
     navigate(`/threats?ip=${ip}`);
   };
+
+  const handleUnblock = async (ip) => {
+    try {
+      await unquarantineIP(ip);
+      setQuarantined((prev) => prev.filter((q) => q !== ip));
+      showMsg(`IP ${ip} unblocked`);
+    } catch {
+      showMsg(`Failed to unblock ${ip}`, 'error');
+    }
+  };
+
+  // WebSocket: listen for real-time auto_block events and surface a toast
+  useEffect(() => {
+    const unsub = subscribeToEvents((msg) => {
+      if (msg.type === 'auto_block') {
+        const d = msg.data || {};
+        showMsg(`🔒 Auto-blocked ${d.source_ip} → ${d.app_name} (risk ${d.risk_score})`, 'error');
+        setQuarantined((prev) => prev.includes(d.source_ip) ? prev : [...prev, d.source_ip]);
+      }
+    });
+    return unsub;
+  }, []);
 
   // Build timeline data from alerts (last 20, chronological)
   const timelineData = [...alerts]
@@ -374,6 +474,7 @@ export default function AlertCenter() {
               alert={alert}
               onAck={handleAcknowledge}
               onInvestigate={handleInvestigate}
+              onUnblock={handleUnblock}
               quarantined={quarantined}
               myDeviceIp={myDeviceIp}
             />

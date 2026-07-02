@@ -152,16 +152,34 @@ function SnifferBanner({ status }) {
 
 function _toRow(e, i) {
   return {
-    time:        e.timestamp
+    time:         e.timestamp
       ? new Date(e.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
       : `T-${i}`,
-    risk_score:  e.risk_score ?? 0,
-    app_name:    e.app_name   ?? 'Unknown',
-    source_ip:   e.source_ip  ?? '',
-    device_name: e.device_name ?? null,
-    is_anomalous: e.is_anomalous         ?? false,
+    risk_score:   e.risk_score ?? 0,
+    app_name:     e.app_name   ?? 'Unknown',
+    source_ip:    e.source_ip  ?? '',
+    device_name:  e.device_name ?? null,
+    is_anomalous: e.is_anomalous          ?? false,
     is_genai:     e.is_genai_exfiltration ?? false,
+    risk_reasons: e.risk_reasons          ?? [],
+    ueba_flags:   e.ueba_flags            ?? [],
+    upload_ratio: e.upload_download_ratio ?? 0,
+    pkt_variance: e.packet_size_variance  ?? 0,
+    iat:          e.inter_arrival_time    ?? 0,
   };
+}
+
+function _reasonColor(reason) {
+  const r = reason.toLowerCase();
+  if (r.includes('ueba') || r.includes('off-hour') || r.includes('baseline') || r.includes('deviation'))
+    return { color: '#00e5ff', bg: 'rgba(0,229,255,0.08)', border: 'rgba(0,229,255,0.2)' };
+  if (r.includes('genai') || r.includes('bulk paste') || r.includes('ai'))
+    return { color: '#b366ff', bg: 'rgba(179,102,255,0.08)', border: 'rgba(179,102,255,0.22)' };
+  if (r.includes('anomal') || r.includes('isolation forest') || r.includes('ml'))
+    return { color: '#e879f9', bg: 'rgba(232,121,249,0.08)', border: 'rgba(232,121,249,0.2)' };
+  if (r.includes('transfer') || r.includes('upload') || r.includes('exfil') || r.includes('large'))
+    return { color: '#ffb300', bg: 'rgba(255,179,0,0.08)', border: 'rgba(255,179,0,0.2)' };
+  return { color: '#ff3366', bg: 'rgba(255,51,102,0.08)', border: 'rgba(255,51,102,0.2)' };
 }
 
 export default function Dashboard() {
@@ -176,13 +194,14 @@ export default function Dashboard() {
 
   // ── WebSocket: push new events straight into the terminal in real-time ──
   useEffect(() => {
-    const unsub = subscribeToEvents((raw) => {
+    const unsub = subscribeToEvents((msg) => {
+      if (msg.type !== 'event') return;
+      const raw = msg.data;
       setWsConnected(true);
       setEvents((prev) => {
         const row = _toRow(raw, 0);
         return [row, ...prev].slice(0, MAX_LIVE_EVENTS);
       });
-      // Bump high-risk list if this event qualifies
       if ((raw.risk_score ?? 0) >= 70) {
         setHighRisk((prev) => [raw, ...prev].slice(0, 8));
       }
@@ -378,7 +397,34 @@ export default function Dashboard() {
                           GenAI Exfil
                         </span>
                       )}
+                      {(ev.ueba_flags?.length > 0) && (
+                        <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold uppercase" style={{ color: '#00e5ff', background: 'rgba(0,229,255,0.08)', border: '1px solid rgba(0,229,255,0.2)' }}>
+                          UEBA
+                        </span>
+                      )}
                     </div>
+                    {/* ML risk reasons */}
+                    {ev.risk_reasons?.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-0.5">
+                        {ev.risk_reasons.slice(0, 3).map((r, ri) => {
+                          const c = _reasonColor(r);
+                          return (
+                            <span key={ri} className="px-1 py-0.5 rounded text-[8px] leading-tight"
+                              style={{ color: c.color, background: c.bg, border: `1px solid ${c.border}` }}>
+                              {r}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {/* ML feature metrics */}
+                    {ev.is_anomalous && (
+                      <div className="flex gap-2 pt-0.5 text-[8px]" style={{ color: 'rgba(232,121,249,0.7)' }}>
+                        <span>↑ratio {Number(ev.upload_ratio).toFixed(1)}x</span>
+                        <span>var {Number(ev.pkt_variance).toFixed(2)}</span>
+                        <span>IAT {Number(ev.iat).toFixed(3)}s</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               );

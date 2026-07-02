@@ -32,9 +32,7 @@ function connect() {
   socket.onmessage = (evt) => {
     try {
       const msg = JSON.parse(evt.data);
-      if (msg.type === 'event') {
-        listeners.forEach((cb) => cb(msg.data));
-      }
+      listeners.forEach((cb) => cb(msg));
     } catch {
       // ignore non-JSON messages (pong etc.)
     }
