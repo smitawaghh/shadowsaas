@@ -1,6 +1,7 @@
 # Environments
 .env
 deploy/ec2_userdata.sh
+*.pem
 .venv
 env/
 venv/
