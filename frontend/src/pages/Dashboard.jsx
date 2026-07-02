@@ -3,8 +3,8 @@ import {
   AreaChart, Area, BarChart, Bar, XAxis, YAxis,
   CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
-import { Activity, AlertTriangle, Terminal, TrendingUp, Shield, Zap, WifiOff, Wifi, Copy, CheckCheck } from 'lucide-react';
-import { fetchStats, fetchRecentEvents, fetchHighRiskEvents, fetchSnifferStatus } from '../services/api';
+import { Activity, AlertTriangle, Terminal, TrendingUp, Shield, Zap, WifiOff, Wifi, Copy, CheckCheck, ShieldCheck } from 'lucide-react';
+import { fetchStats, fetchRecentEvents, fetchHighRiskEvents, fetchSnifferStatus, fetchQuarantinedIPs } from '../services/api';
 import { subscribeToEvents, closeEventSocket } from '../services/wsClient';
 
 const KPI_CONFIGS = [
@@ -150,6 +150,64 @@ function SnifferBanner({ status }) {
   );
 }
 
+function AttacksBlockedCard({ count, pulse }) {
+  return (
+    <div className="glass-panel rounded-xl px-6 py-4 flex items-center gap-6 transition-all duration-300"
+      style={{
+        borderTop: '2px solid rgba(0,229,255,0.55)',
+        boxShadow: pulse
+          ? '0 0 48px rgba(0,229,255,0.22), inset 0 0 32px rgba(0,229,255,0.05)'
+          : '0 0 0px transparent',
+      }}>
+      {/* Icon */}
+      <div className="w-14 h-14 rounded-xl flex items-center justify-center flex-shrink-0 transition-all duration-300"
+        style={{
+          background: pulse ? 'rgba(0,229,255,0.14)' : 'rgba(0,229,255,0.07)',
+          border: `1px solid ${pulse ? 'rgba(0,229,255,0.45)' : 'rgba(0,229,255,0.18)'}`,
+          boxShadow: pulse ? '0 0 20px rgba(0,229,255,0.35)' : 'none',
+        }}>
+        <ShieldCheck className="w-7 h-7 transition-colors duration-300" style={{ color: pulse ? '#7fffff' : '#00e5ff' }} />
+      </div>
+
+      {/* Counter */}
+      <div className="flex-1 min-w-0">
+        <p className="text-[10px] font-mono text-slate-500 uppercase tracking-[0.2em] mb-1">Threats Prevented</p>
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <span
+            className="text-5xl font-bold font-mono tabular-nums leading-none"
+            style={{
+              color: pulse ? '#a5f3fc' : '#00e5ff',
+              textShadow: pulse
+                ? '0 0 28px rgba(0,229,255,0.9), 0 0 60px rgba(0,229,255,0.4)'
+                : '0 0 10px rgba(0,229,255,0.25)',
+              display: 'inline-block',
+              animation: pulse ? 'blockedPop 0.45s cubic-bezier(0.34,1.56,0.64,1)' : 'none',
+            }}>
+            {count}
+          </span>
+          <span className="text-sm font-mono text-slate-600">attacks blocked by auto-response engine</span>
+        </div>
+      </div>
+
+      {/* Right side status */}
+      <div className="text-right hidden sm:flex flex-col items-end gap-1.5 flex-shrink-0">
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: '#00e5ff', boxShadow: '0 0 6px #00e5ff' }} />
+          <span className="text-[10px] font-mono text-cyan-500 font-semibold tracking-wider uppercase">AutoResponse</span>
+        </div>
+        {pulse ? (
+          <span className="inline-flex items-center gap-1.5 text-[9px] font-bold px-2.5 py-1 rounded-full font-mono animate-pulse"
+            style={{ color: '#00e5ff', background: 'rgba(0,229,255,0.12)', border: '1px solid rgba(0,229,255,0.35)' }}>
+            ⚡ BLOCKED
+          </span>
+        ) : (
+          <span className="text-[9px] font-mono text-slate-700">no active block</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function _toRow(e, i) {
   return {
     time:         e.timestamp
@@ -190,34 +248,45 @@ export default function Dashboard() {
   const [lastUpdate, setLastUpdate]       = useState(null);
   const [wsConnected, setWsConnected]     = useState(false);
   const [snifferStatus, setSnifferStatus] = useState(null);
-  const terminalRef = useRef(null);
+  const [blockedCount, setBlockedCount]   = useState(0);
+  const [blockPulse, setBlockPulse]       = useState(false);
+  const terminalRef    = useRef(null);
+  const pulseTimerRef  = useRef(null);
 
-  // ── WebSocket: push new events straight into the terminal in real-time ──
+  // ── WebSocket: push new events + handle auto_block notifications ──────
   useEffect(() => {
     const unsub = subscribeToEvents((msg) => {
-      if (msg.type !== 'event') return;
-      const raw = msg.data;
-      setWsConnected(true);
-      setEvents((prev) => {
-        const row = _toRow(raw, 0);
-        return [row, ...prev].slice(0, MAX_LIVE_EVENTS);
-      });
-      if ((raw.risk_score ?? 0) >= 70) {
-        setHighRisk((prev) => [raw, ...prev].slice(0, 8));
+      if (msg.type === 'event') {
+        const raw = msg.data;
+        setWsConnected(true);
+        setEvents((prev) => {
+          const row = _toRow(raw, 0);
+          return [row, ...prev].slice(0, MAX_LIVE_EVENTS);
+        });
+        if ((raw.risk_score ?? 0) >= 70) {
+          setHighRisk((prev) => [raw, ...prev].slice(0, 8));
+        }
+      } else if (msg.type === 'auto_block') {
+        setBlockedCount((c) => c + 1);
+        setBlockPulse(true);
+        clearTimeout(pulseTimerRef.current);
+        pulseTimerRef.current = setTimeout(() => setBlockPulse(false), 1600);
       }
     });
     return () => {
       unsub();
+      clearTimeout(pulseTimerRef.current);
     };
   }, []);
 
   // ── Polling: KPI stats + initial event backfill every 10s ──────────────
   const loadData = useCallback(async () => {
     try {
-      const [statsData, eventsData, hrData] = await Promise.all([
+      const [statsData, eventsData, hrData, quarantineData] = await Promise.all([
         fetchStats(1),
         fetchRecentEvents(40),
         fetchHighRiskEvents(8),
+        fetchQuarantinedIPs().catch(() => []),
       ]);
       setPrevStats((p) => p ?? statsData);
       setStats(statsData);
@@ -232,6 +301,11 @@ export default function Dashboard() {
       });
 
       setHighRisk((prev) => prev.length > 0 ? prev : (Array.isArray(hrData) ? hrData : []));
+
+      // Seed the blocked count from persistent quarantine records (auto-blocked only)
+      const qList = Array.isArray(quarantineData) ? quarantineData : [];
+      const autoBlocked = qList.filter((q) => q.source === 'auto').length;
+      setBlockedCount((prev) => Math.max(prev, autoBlocked));
     } catch (err) {
       console.error('Dashboard poll failed', err);
     }
@@ -276,6 +350,13 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-5 animate-fade-in">
+      <style>{`
+        @keyframes blockedPop {
+          0%   { transform: scale(1); }
+          45%  { transform: scale(1.22); }
+          100% { transform: scale(1); }
+        }
+      `}</style>
 
       {/* Page header */}
       <div className="flex items-center justify-between">
@@ -300,6 +381,9 @@ export default function Dashboard() {
 
       {/* Sniffer live/offline banner */}
       <SnifferBanner status={snifferStatus} />
+
+      {/* Threats Prevented hero metric */}
+      <AttacksBlockedCard count={blockedCount} pulse={blockPulse} />
 
       {/* KPI row */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
